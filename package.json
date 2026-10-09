@@ -1,0 +1,19 @@
+{
+  "name": "air-power-operations-and-resource-optimisation",
+  "version": "1.0.0",
+  "description": "Smart India Hackathon 2026 (SIH26250) Full-Stack Web Application Prototype",
+  "scripts": {
+    "server": "npm --prefix server start",
+    "client": "npm --prefix client dev",
+    "test": "npm --prefix server test",
+    "db:init": "npm --prefix server run db:init"
+  },
+  "keywords": [
+    "sih26250",
+    "air-power",
+    "aviation-resource-optimisation",
+    "hackathon-prototype"
+  ],
+  "author": "SIH 2026 Team",
+  "license": "MIT"
+}
