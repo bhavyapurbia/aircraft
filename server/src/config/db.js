@@ -1,8 +1,12 @@
 const mysql = require('mysql2/promise');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../../.env') });
+const { sqliteQuery, sqliteTransaction, sqlitePool, DB_PATH } = require('./sqliteDb');
 
-const pool = mysql.createPool({
+let activeEngine = null; // 'mysql' | 'sqlite'
+let mysqlPool = null;
+
+const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
@@ -11,33 +15,134 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 15,
   queueLimit: 0,
-  dateStrings: true // Return dates as strings to avoid timezone shift surprises
-});
+  dateStrings: true
+};
 
-// Helper for queries with automatic parameter handling
-async function query(sql, params = []) {
-  const [rows] = await pool.execute(sql, params);
-  return rows;
+// Client preference: 'auto' (default), 'mysql', or 'sqlite'
+const preferredClient = (process.env.DB_CLIENT || 'auto').toLowerCase();
+
+async function initDatabaseConnection() {
+  if (activeEngine) return activeEngine;
+
+  if (preferredClient === 'sqlite') {
+    activeEngine = 'sqlite';
+    console.log('[DATABASE] DB_CLIENT=sqlite set. Using local embedded SQLite database.');
+    return activeEngine;
+  }
+
+  // Attempt MySQL connection
+  try {
+    const testPool = mysql.createPool({
+      ...dbConfig,
+      connectTimeout: 2000
+    });
+    const conn = await testPool.getConnection();
+    conn.release();
+    mysqlPool = testPool;
+    activeEngine = 'mysql';
+    console.log(`[DATABASE] Connected successfully to MySQL (${dbConfig.host}:${dbConfig.port}/${dbConfig.database}).`);
+    return activeEngine;
+  } catch (err) {
+    if (preferredClient === 'mysql') {
+      console.error('[DATABASE ERROR] Failed connecting to MySQL (DB_CLIENT=mysql):', err.message);
+      throw err;
+    }
+
+    console.warn('================================================================');
+    console.warn(`[DATABASE NOTICE] MySQL not reachable on ${dbConfig.host}:${dbConfig.port} (${err.code || err.message}).`);
+    console.warn(`[DATABASE NOTICE] Activating zero-config embedded SQLite database:`);
+    console.warn(`[DATABASE NOTICE] Location: ${DB_PATH}`);
+    console.warn('================================================================');
+    activeEngine = 'sqlite';
+    return activeEngine;
+  }
 }
 
-// Transaction helper
-async function transaction(callback) {
-  const connection = await pool.getConnection();
-  await connection.beginTransaction();
-  try {
-    const result = await callback(connection);
-    await connection.commit();
-    return result;
-  } catch (err) {
-    await connection.rollback();
-    throw err;
-  } finally {
-    connection.release();
+async function query(sql, params = []) {
+  if (!activeEngine) {
+    await initDatabaseConnection();
   }
+
+  if (activeEngine === 'mysql') {
+    const [rows] = await mysqlPool.execute(sql, params);
+    return rows;
+  } else {
+    return await sqliteQuery(sql, params);
+  }
+}
+
+async function transaction(callback) {
+  if (!activeEngine) {
+    await initDatabaseConnection();
+  }
+
+  if (activeEngine === 'mysql') {
+    const connection = await mysqlPool.getConnection();
+    await connection.beginTransaction();
+    try {
+      const result = await callback(connection);
+      await connection.commit();
+      return result;
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+  } else {
+    return await sqliteTransaction(callback);
+  }
+}
+
+const pool = {
+  getConnection: async () => {
+    if (!activeEngine) {
+      await initDatabaseConnection();
+    }
+    if (activeEngine === 'mysql') {
+      return await mysqlPool.getConnection();
+    } else {
+      return await sqlitePool.getConnection();
+    }
+  },
+  execute: async (sql, params) => {
+    if (!activeEngine) {
+      await initDatabaseConnection();
+    }
+    if (activeEngine === 'mysql') {
+      return await mysqlPool.execute(sql, params);
+    } else {
+      return await sqlitePool.execute(sql, params);
+    }
+  },
+  query: async (sql, params) => {
+    if (!activeEngine) {
+      await initDatabaseConnection();
+    }
+    if (activeEngine === 'mysql') {
+      return await mysqlPool.query(sql, params);
+    } else {
+      return await sqlitePool.query(sql, params);
+    }
+  },
+  end: () => {
+    if (mysqlPool) {
+      mysqlPool.end();
+      mysqlPool = null;
+    }
+    sqlitePool.end();
+    activeEngine = null;
+  }
+};
+
+function getActiveEngine() {
+  return activeEngine;
 }
 
 module.exports = {
   pool,
   query,
-  transaction
+  transaction,
+  initDatabaseConnection,
+  getActiveEngine
 };

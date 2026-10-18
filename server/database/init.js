@@ -2,16 +2,24 @@ const fs = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const { getDatabase, sqliteQuery, DB_PATH } = require('../src/config/sqliteDb');
 
 const config = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   port: parseInt(process.env.DB_PORT || '3306', 10),
-  multipleStatements: true
+  multipleStatements: true,
+  connectTimeout: 2500
 };
 
 async function initDatabase() {
+  const preferredClient = (process.env.DB_CLIENT || 'auto').toLowerCase();
+
+  if (preferredClient === 'sqlite') {
+    return initSqlite();
+  }
+
   console.log('Connecting to MySQL at', `${config.host}:${config.port}...`);
   let connection;
   try {
@@ -48,18 +56,51 @@ async function initDatabase() {
     const [activities] = await connection.query('SELECT COUNT(*) as cnt FROM activities');
     const [conflicts] = await connection.query('SELECT COUNT(*) as cnt FROM schedule_conflicts');
 
-    console.log('=== Database Initialisation Summary ===');
+    console.log('=== MySQL Database Initialisation Summary ===');
     console.log(`- Users: ${users[0].cnt}`);
     console.log(`- Aviation Resources: ${resources[0].cnt}`);
     console.log(`- Scheduled Activities: ${activities[0].cnt}`);
     console.log(`- Active Conflicts: ${conflicts[0].cnt}`);
     console.log('Database ready for AIR POWER operations!');
   } catch (err) {
-    console.error('Database initialisation error:', err.message);
-    process.exit(1);
+    if (preferredClient === 'mysql') {
+      console.error('Database initialisation error (MySQL required):', err.message);
+      process.exit(1);
+    }
+
+    console.warn(`MySQL initialisation skipped (${err.message}). Initialising SQLite fallback...`);
+    return initSqlite();
   } finally {
     if (connection) await connection.end();
   }
+}
+
+async function initSqlite() {
+  console.log('Initialising embedded SQLite database at:', DB_PATH);
+  // Remove existing sqlite database if running manual re-init
+  if (fs.existsSync(DB_PATH)) {
+    try {
+      fs.unlinkSync(DB_PATH);
+      console.log('Cleared previous SQLite database file.');
+    } catch (e) {
+      // Ignored if busy
+    }
+  }
+
+  getDatabase();
+
+  const [users] = await sqliteQuery('SELECT COUNT(*) as cnt FROM users');
+  const [resources] = await sqliteQuery('SELECT COUNT(*) as cnt FROM resources');
+  const [activities] = await sqliteQuery('SELECT COUNT(*) as cnt FROM activities');
+  const [conflicts] = await sqliteQuery('SELECT COUNT(*) as cnt FROM schedule_conflicts');
+
+  console.log('=== SQLite Initialisation Summary ===');
+  console.log(`- Database file: ${DB_PATH}`);
+  console.log(`- Users: ${users.cnt}`);
+  console.log(`- Aviation Resources: ${resources.cnt}`);
+  console.log(`- Scheduled Activities: ${activities.cnt}`);
+  console.log(`- Active Conflicts: ${conflicts.cnt}`);
+  console.log('SQLite database ready for AIR POWER operations!');
 }
 
 if (require.main === module) {
